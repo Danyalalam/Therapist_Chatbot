@@ -1,0 +1,35 @@
+<!-- Therapist_Chatbot/frontend/templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Therapist</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🧠 AI Therapist</h1>
+        <div class="chat-container" id="chat-container">
+            <!-- Messages will be appended here -->
+        </div>
+        <div class="input-container">
+            <input type="text" id="user-input" placeholder="Type your message here...">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+        <div class="model-selector">
+            <label>
+                <input type="radio" name="model" value="azure" checked> Azure GPT-4
+            </label>
+            <label>
+                <input type="radio" name="model" value="gemini"> Google Gemini
+            </label>
+        </div>
+    </div>
+    <div class="footer">
+        ⚠️ This is an AI assistant and not a replacement for professional mental health support.<br>
+        If you're in crisis, please contact emergency services or a mental health professional.
+    </div>
+    <script src="/static/js/script.js"></script>
+</body>
+</html>
