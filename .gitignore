@@ -2,3 +2,31 @@
 *.db
 __pycache__/
 therapy
+
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# VS Code
+.vscode/
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# MacOS
+.DS_Store
+
+# Environment Variables
+.env

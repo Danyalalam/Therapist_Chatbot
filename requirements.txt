@@ -5,3 +5,9 @@ openai
 langchain-openai
 pydantic
 python-dotenv
+fastapi
+uvicorn
+python-jose
+passlib[bcrypt]
+python-dotenv
+google-generativeai

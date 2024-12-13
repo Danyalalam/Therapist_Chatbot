@@ -64,7 +64,7 @@ class AIModels:
             openai_api_key=os.getenv('AZURE_OPENAI_API_KEY'),
             azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT'),
             azure_deployment="gpt-4",
-            api_version="2023-05-15",
+            api_version="2024-08-01-preview",
             temperature=0.7,
             max_tokens=150,
             timeout=30,
