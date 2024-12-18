@@ -1,168 +1,217 @@
-# Therapist_Chatbot/backend/backend.py
 import os
+import logging
+import asyncio
+from typing import List, Dict
+from enum import Enum
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from langchain_openai import AzureChatOpenAI
-import sqlite3
-from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi import Request
-from dotenv import load_dotenv
+from openai import AzureOpenAI
 import google.generativeai as genai
-from pathlib import Path
+from dotenv import load_dotenv
+import uuid
+from pydantic import BaseModel
 
-# Load environment variables
+# Setup logging and env
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 load_dotenv()
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="Therapist Chatbot API",
-    description="API for an empathetic AI therapist chatbot",
-    version="1.0.0"
-)
-
-# Add CORS middleware
+# Initialize FastAPI
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust as needed for production
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Define directories
-ROOT_DIR = Path(__file__).resolve().parent.parent  # Adjust if backend.py is nested differently
-STATIC_DIR = ROOT_DIR / 'frontend' / 'static'
-TEMPLATES_DIR = ROOT_DIR / 'frontend' / 'templates'
-DATABASE_PATH = ROOT_DIR / 'database' / 'chatbot.db'
+# AI Model Selection
+class AIModel(str, Enum):
+    GPT4 = "gpt4"
+    GEMINI = "gemini"
 
-# Mount static files
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Initialize AI Clients
+azure_client = AzureOpenAI(
+    api_version="2024-08-01-preview",
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    azure_endpoint="https://langrag.openai.azure.com/"
+)
 
-# Initialize templates
-templates = Jinja2Templates(directory=TEMPLATES_DIR)
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
-# Database setup
-def init_db():
-    if not DATABASE_PATH.exists():
-        raise FileNotFoundError(f"Database not found at {DATABASE_PATH}. Please run setup_db.py first.")
-    else:
-        print(f"Using database at {DATABASE_PATH}")
-
-init_db()
-
-# Initialize AI Models
-class AIModels:
-    def __init__(self):
-        # Initialize Azure OpenAI
-        if "SSL_CERT_FILE" in os.environ:
-            del os.environ["SSL_CERT_FILE"]
-        
-        self.azure_llm = AzureChatOpenAI(
-            openai_api_key=os.getenv('AZURE_OPENAI_API_KEY'),
-            azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT'),
-            azure_deployment="gpt-4",
-            api_version="2024-08-01-preview",
-            temperature=0.7,
-            max_tokens=150,
-            timeout=30,
-            max_retries=2
-        )
-        
-        # Initialize Gemini
-        GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-        genai.configure(api_key=GOOGLE_API_KEY)
-        self.gemini = genai.GenerativeModel('gemini-1.5-pro')
-        self.gemini_chats = {}
-
-ai_models = AIModels()
-
-# Pydantic models
-class ChatRequest(BaseModel):
-    message: str
-    model: str = "azure"  # "azure" or "gemini"
-
-# Message history management
-class ChatSession:
-    def __init__(self):
-        self.history = []
-
-    def add_message(self, role: str, content: str):
-        self.history.append((role, content))
-
-    def get_context(self):
-        return self.history[-5:]  # Keep last 5 messages for context
-
-# Initialize session storage
-sessions = {}
-
-# Define therapist personality
-system_prompt = """You are an empathetic and professional therapist. 
+SYSTEM_PROMPT = """You are an empathetic and professional therapist.
 Your responses should be:
 - Compassionate and understanding
-- Non-judgmental
-- Focused on active listening
-- Professional but warm
-- Encouraging but not dismissive
-- Avoid giving medical advice or diagnoses
-- Use reflective listening techniques
-- Ask open-ended questions to encourage conversation"""
+- Non-judgmental and supportive
+- Professional yet warm
+- Using reflective listening
+- Asking open-ended questions"""
 
-# Routes
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+# Pydantic Models
+class StartRequest(BaseModel):
+    model: AIModel
 
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    try:
-        session_id = "default"  # TODO: Implement proper session management
-        
-        if request.model == "gemini":
-            # Handle Gemini chat
-            if session_id not in ai_models.gemini_chats:
-                chat = ai_models.gemini.start_chat(history=[])
-                chat.send_message(system_prompt)
-                ai_models.gemini_chats[session_id] = chat
-            
-            response = ai_models.gemini_chats[session_id].send_message(request.message)
-            bot_response = response.text
+class UserMessage(BaseModel):
+    client_id: str
+    message: str  # Removed 'model' field
+
+class AIResponse(BaseModel):
+    response: str
+    model: AIModel
+
+class StartResponse(BaseModel):
+    client_id: str
+    model: AIModel
+
+class ModelSwitch(BaseModel):
+    client_id: str
+    model: AIModel
+
+# Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.chat_histories: Dict[str, List[Dict]] = {}
+        self.gemini_chats: Dict[str, any] = {}
+        self.client_models: Dict[str, AIModel] = {}
+
+    def create_session(self, model: AIModel = AIModel.GPT4) -> tuple[str, AIModel]:
+        client_id = str(uuid.uuid4())
+        self.client_models[client_id] = model
+
+        if model == AIModel.GEMINI:
+            chat = gemini_model.start_chat(history=[])
+            chat.send_message(SYSTEM_PROMPT)
+            self.gemini_chats[client_id] = chat
+            logger.info(f"Gemini session started for client_id: {client_id}")
         else:
-            # Handle Azure OpenAI chat
-            if session_id not in sessions:
-                sessions[session_id] = ChatSession()
-            
-            messages = [("system", system_prompt)]
-            messages.extend(sessions[session_id].get_context())
-            messages.append(("human", request.message))
-            
-            response = ai_models.azure_llm.invoke(messages)
-            bot_response = response.content.strip()
-            
-            sessions[session_id].add_message("human", request.message)
-            sessions[session_id].add_message("assistant", bot_response)
+            self.chat_histories[client_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+            logger.info(f"GPT-4 session started for client_id: {client_id}")
 
-        # Log to database
-        conn = sqlite3.connect(DATABASE_PATH)
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO conversations (user_message, bot_response, model) VALUES (?, ?, ?)",
-            (request.message, bot_response, request.model)
+        logger.info(f"Session {client_id} created with {model}")
+        return client_id, model
+
+    async def get_ai_response(self, client_id: str, message: str) -> tuple[str, AIModel]:
+        model = self.client_models.get(client_id, AIModel.GPT4)
+        logger.info(f"Received message from client {client_id} using model {model}: {message}")
+
+        try:
+            if model == AIModel.GEMINI:
+                chat = self.gemini_chats.get(client_id)
+                if not chat:
+                    logger.error(f"No Gemini chat found for client_id: {client_id}")
+                    raise HTTPException(status_code=400, detail="Invalid client_id for Gemini.")
+
+                logger.info(f"Sending message to Gemini for client {client_id}: {message}")
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, chat.send_message, message)
+                logger.info(f"Received response from Gemini for client {client_id}: {response.text}")
+                return response.text, model
+            else:
+                messages = self.get_history(client_id)
+                messages.append({"role": "user", "content": message})
+                logger.info(f"Sending message to GPT-4 for client {client_id}: {message}")
+                completion = azure_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=150
+                )
+                response = completion.choices[0].message.content.strip()
+                self.add_message(client_id, "assistant", response)
+                logger.info(f"Received response from GPT-4 for client {client_id}: {response}")
+                return response, model
+        except Exception as e:
+            logger.error(f"AI response error for client {client_id} using model {model}: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    def get_history(self, client_id: str) -> List[Dict]:
+        return self.chat_histories.get(client_id, [{"role": "system", "content": SYSTEM_PROMPT}])
+
+    def add_message(self, client_id: str, role: str, content: str):
+        if client_id in self.chat_histories:
+            self.chat_histories[client_id].append({"role": role, "content": content})
+            logger.info(f"Added message to history for client {client_id}: [{role}] {content}")
+
+    def switch_model(self, client_id: str, new_model: AIModel) -> AIModel:
+        if client_id not in self.client_models:
+            logger.error(f"Invalid client_id for model switch: {client_id}")
+            raise HTTPException(status_code=400, detail="Invalid client_id")
+        self.client_models[client_id] = new_model
+
+        if new_model == AIModel.GEMINI:
+            chat = gemini_model.start_chat(history=[])
+            chat.send_message(SYSTEM_PROMPT)
+            self.gemini_chats[client_id] = chat
+            logger.info(f"Gemini session restarted for client_id: {client_id}")
+            # Clear GPT-4 history if exists
+            self.chat_histories.pop(client_id, None)
+        else:
+            self.chat_histories[client_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+            logger.info(f"GPT-4 session restarted for client_id: {client_id}")
+            # Clear Gemini chat if exists
+            self.gemini_chats.pop(client_id, None)
+
+        logger.info(f"Switched model for client {client_id} to {new_model}")
+        return new_model
+
+    def end_session(self, client_id: str):
+        self.chat_histories.pop(client_id, None)
+        self.gemini_chats.pop(client_id, None)
+        self.client_models.pop(client_id, None)
+        logger.info(f"Session {client_id} ended and data cleared.")
+
+# Initialize manager
+manager = ConnectionManager()
+
+# Add the /ping endpoint here
+@app.get("/ping")
+async def ping():
+    return {"status": "alive"}
+
+# API Endpoints
+@app.post("/start", response_model=StartResponse)
+async def start_conversation(start_request: StartRequest):
+    client_id, model = manager.create_session(start_request.model)
+    logger.info(f"Conversation started for client_id: {client_id} with model: {model}")
+    return StartResponse(client_id=client_id, model=model)
+
+@app.post("/message", response_model=AIResponse)
+async def get_message(user_message: UserMessage):
+    try:
+        response, model = await manager.get_ai_response(
+            user_message.client_id,
+            user_message.message.strip()
         )
-        conn.commit()
-        conn.close()
-
-        return {"response": bot_response}
+        logger.info(f"Responding to client {user_message.client_id} using model {model}")
+        return AIResponse(response=response, model=model)
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        print(f"Error in /chat endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Message processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
+@app.post("/switch-model", response_model=AIResponse)
+async def switch_model(switch: ModelSwitch):
+    try:
+        new_model = manager.switch_model(switch.client_id, switch.model)
+        return AIResponse(
+            response=f"Switched to {new_model.value} model",
+            model=new_model
+        )
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Model switch error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.delete("/end/{client_id}")
+async def end_conversation(client_id: str):
+    try:
+        manager.end_session(client_id)
+        logger.info(f"Conversation ended for client_id: {client_id}")
+        return {"detail": "Conversation ended"}
+    except Exception as e:
+        logger.error(f"End conversation error for client_id {client_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
